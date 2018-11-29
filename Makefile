@@ -1,168 +1,120 @@
+### modify these paths to local Boost and NLopt install directories
+BOOST_INSTALL_DIR = /home/pl88/boost_1_58_0/install
+NLOPT_INSTALL_DIR = /groups/price/poru/HSPH_SVN/src/BOLT-LMM/nlopt-2.4.2
 
-# -----------------------------------------------------------------
-#   Makefile for PLINK 
-#   
-#   Supported platforms
-#       Unix / Linux                UNIX
-#       Windows                     WIN
-#       Mac                         MAC
-#       Solaris                     SOLARIS
-#  
-#   Compilation options
-#       R plugins                   WITH_R_PLUGINS
-#       Web-based version check     WITH_WEBCHECK
-#       Ensure 32-bit binary        FORCE_32BIT 
-#       (Ignored)                   WITH_ZLIB
-#       Link to LAPACK              WITH_LAPACK
-#       Force dynamic linking       FORCE_DYNAMIC
-#
-# ---------------------------------------------------------------------
+MKLROOT = /groups/price/poru/external_software/intel/mkl
+INTELROOT = /groups/price/poru/external_software/intel
+ZLIB_STATIC_DIR = /opt/zlib-1.2.8/lib # probably unnecessary on most systems
+GLIBC_STATIC_DIR = /home/pl88/glibc-static/usr/lib64
 
-# Set this variable to either UNIX, MAC or WIN
-SYS = UNIX
-
-# Leave blank after "=" to disable; put "= 1" to enable
-WITH_R_PLUGINS = 1
-WITH_WEBCHECK = 1
-FORCE_32BIT = 1
-WITH_ZLIB = 1
-WITH_LAPACK = 
-FORCE_DYNAMIC = 
-
-# Put C++ compiler here; Windows has it's own specific version
-CXX_UNIX = g++
-CXX_WIN = c:\bin\mingw\bin\mingw32-g++.exe
-
-# Any other compiler flags here ( -Wall, -g, etc)
-CXXFLAGS = 
-
-# Misc
-LIB_LAPACK = /usr/lib/liblapack.so.3
-
-
-# --------------------------------------------------------------------
-# Do not edit below this line
-# --------------------------------------------------------------------
-
-CXXFLAGS += -O3  -I.
-OUTPUT = plink
-
-# Some system specific flags
-
-ifeq ($(SYS),WIN)
- CXXFLAGS += -DWIN -static
- CXX = $(CXX_WIN)
- ifndef FORCE_DYNAMIC
-  CXXFLAGS += -static
- endif
+ifeq ($(strip ${linking}),)
+	linking = dynamic
 endif
 
-ifeq ($(SYS),UNIX)
- CXXFLAGS += -DUNIX
- CXX = $(CXX_UNIX)
- ifndef FORCE_DYNAMIC
-  CXXFLAGS += -static
- endif
-endif
+# CC = g++
+CC = /groups/price/poru/external_software/intel/bin/icpc
 
-ifeq ($(SYS),MAC)
- CXXFLAGS += -DUNIX -Dfopen64=fopen
- CXX = $(CXX_UNIX)
-endif
-
-ifeq ($(SYS),SOLARIS)
- CXXFLAGS += -fast
- CXXFLAGS += -xtarget=ultraT2  # specific Sun hardware (must be specified after the -fast option)
- CXXFLAGS += -xdepend=no       # required to fix seg fault in iropt
- LIB = -lstdc++
- LIB += -lgcc
- LIB += -lsocket         # added for socket support
- LIB += -lnsl            # added for network services support
- CXX = $(CXX_UNIX)
-endif
-
-ifdef FORCE_32BIT
- CXXFLAGS += -m32
-endif
-
-
-# Flags for web-based version check
-
-ifdef WITH_WEBCHECK
-ifeq ($(SYS),WIN)
- LIB += -lwsock32
-endif
+ifeq (${debug},true)
+	CFLAGS += -g
 else
- CXXFLAGS += -DSKIP
+	CFLAGS += -O2
+endif
+
+CFLAGS += -msse -msse2
+CFLAGS += -DUSE_SSE -DMEASURE_DGEMM -DVERBOSE
+CFLAGS += -Wall
+
+
+# add Boost include and lib paths
+ifneq ($(strip ${BOOST_INSTALL_DIR}),)
+	CPATHS += -I${BOOST_INSTALL_DIR}/include
+	LPATHS += -L${BOOST_INSTALL_DIR}/lib
+	ifeq (${linking},dynamic)
+		LPATHS += -Wl,-rpath,${BOOST_INSTALL_DIR}/lib
+	endif
+endif
+
+# add NLopt include and lib paths
+ifneq ($(strip ${NLOPT_INSTALL_DIR}),)
+	CPATHS += -I${NLOPT_INSTALL_DIR}/api
+	LPATHS += -L${NLOPT_INSTALL_DIR}/.libs
+	ifeq (${linking},dynamic)
+		LPATHS += -Wl,-rpath,${NLOPT_INSTALL_DIR}/.libs
+	endif
+endif
+
+# add zlib.a path for static linking on Orchestra
+ifneq ($(strip ${ZLIB_STATIC_DIR}),)
+	ifneq (${linking},dynamic)
+		LPATHS += -L${ZLIB_STATIC_DIR}
+	endif
+endif
+
+# add MKL paths (if not compiling with g++, i.e., compiling with icpc)
+ifneq (${CC},g++)
+	CPATHS += -I${MKLROOT}/include
+	ifeq (${linking},dynamic)
+		LPATHS += -L${MKLROOT}/lib/intel64 -Wl,-rpath,${MKLROOT}/lib/intel64 # for libmkl*
+		LPATHS += -Wl,-rpath,${INTELROOT}/lib/intel64 # for libiomp5.so
+	endif
+endif
+
+# add flags for static linking; build LAPACK/MKL component of link line
+ifeq (${CC},g++)
+	CFLAGS += -fopenmp
+	LFLAGS += -fopenmp
+	LLAPACK = -llapack -lgfortran
+	ifeq (${linking},static)
+		LFLAGS += -static
+		LPATHS += -L${GLIBC_STATIC_DIR} -L${ZLIB_STATIC_DIR}
+	else ifeq (${linking},static-except-glibc)
+		LFLAGS += -static-libgcc -static-libstdc++
+		LPATHS += -L${ZLIB_STATIC_DIR}
+	endif
+else
+	CFLAGS += -DUSE_MKL #-DUSE_MKL_MALLOC
+	CFLAGS += -qopenmp
+	LFLAGS += -qopenmp
+	CFLAGS += -Wunused-variable -Wpointer-arith -Wuninitialized -Wreturn-type -Wcheck -Wshadow
+	ifeq (${linking},static)
+		LFLAGS += -static
+		LPATHS += -L${GLIBC_STATIC_DIR} -L${ZLIB_STATIC_DIR}
+		LLAPACK = -Wl,--start-group ${MKLROOT}/lib/intel64/libmkl_intel_lp64.a ${MKLROOT}/lib/intel64/libmkl_core.a ${MKLROOT}/lib/intel64/libmkl_intel_thread.a -Wl,--end-group
+	else ifeq (${linking},static-except-glibc)
+		LFLAGS += -static-intel -static-libstdc++ -static-libgcc
+		LPATHS += -L${ZLIB_STATIC_DIR}
+		LLAPACK = -Wl,--start-group ${MKLROOT}/lib/intel64/libmkl_intel_lp64.a ${MKLROOT}/lib/intel64/libmkl_core.a ${MKLROOT}/lib/intel64/libmkl_intel_thread.a -Wl,--end-group
+	else
+		LLAPACK = -lmkl_intel_lp64 -lmkl_core -lmkl_intel_thread
+	endif
+# Note: If MKL LAPACK routines are called with arrays of size >= 2^31,
+#       interface layer ILP64 (64-bit integer) is required.
+#       However, since BOLT-LMM makes linear algebra calls in blocks, LP64 (32-bit)
+#       should be sufficient.
+endif
+
+# build link line (minus flags)
+LLIBS = -lboost_program_options -lboost_iostreams -lz -lnlopt
+ifeq (${linking},static-except-glibc)
+	L = ${LPATHS} -Wl,-Bstatic ${LLIBS} ${LLAPACK} -Wl,-Bdynamic -lpthread -lm
+else
+	L = ${LPATHS} ${LLIBS} ${LLAPACK} -lpthread -lm
 endif
 
 
 
-SRC = plink.cpp annot.cpp options.cpp input.cpp binput.cpp tinput.cpp	\
-genome.cpp helper.cpp stats.cpp filters.cpp locus.cpp multi.cpp		\
-crandom.cpp cluster.cpp mds.cpp output.cpp informative.cpp assoc.cpp	\
-epi.cpp prephap.cpp phase.cpp trio.cpp tdt.cpp sharing.cpp genepi.cpp	\
-sets.cpp perm.cpp mh.cpp genedrop.cpp gxe.cpp merge.cpp hotel.cpp	\
-multiple.cpp haploCC.cpp haploTDT.cpp poo.cpp webcheck.cpp qfam.cpp	\
-linear.cpp bmerge.cpp parse.cpp mishap.cpp legacy.cpp homozyg.cpp	\
-segment.cpp model.cpp logistic.cpp glm.cpp dcdflib.cpp elf.cpp		\
-dfam.cpp fisher.cpp linput.cpp sockets.cpp lookup.cpp proxy.cpp		\
-pdriver.cpp haploQTL.cpp haplohelper.cpp haplowindow.cpp genogroup.cpp	\
-nonfounderphasing.cpp clumpld.cpp genoerr.cpp em.cpp impute.cpp		\
-metaem.cpp profile.cpp nlist.cpp whap.cpp simul.cpp gvar.cpp cnv.cpp	\
-step.cpp greport.cpp flip.cpp qualscores.cpp cnvqt.cpp cfamily.cpp	\
-setscreen.cpp idhelp.cpp tag.cpp hapglm.cpp lookup2.cpp blox.cpp	\
-zed.cpp dosage.cpp metaanal.cpp rtest.cpp hinput.cpp sechap.cpp		\
-pinput.cpp
+T = bolt
+O = Bolt.o BoltParams.o BoltParEstCV.o BoltReml.o CovariateBasis.o DataMatrix.o FileUtils.o Jackknife.o LDscoreCalibration.o MapInterpolater.o MatrixUtils.o MemoryUtils.o NonlinearOptMulti.o NumericUtils.o PhenoBuilder.o RestrictSnpSet.o SnpData.o SnpInfo.o SpectrumTools.o StatsUtils.o StringUtils.o Timer.o
+OMAIN = BoltMain.o $O
 
+.PHONY: clean
 
-HDR = plink.h options.h helper.h stats.h crandom.h sets.h phase.h	\
-perm.h model.h linear.h logistic.h dcdflib.h ipmpar.h cdflib.h		\
-fisher.h sockets.h haplowindow.h genogroup.h clumpld.h nlist.h whap.h	\
-gvar.h cnv.h cfamily.h idhelp.h zed.h rtest.h
+%.o: %.cpp
+	${CC} ${CFLAGS} ${CPATHS} -o $@ -c $<
 
-ifdef WITH_R_PLUGINS
-CXXFLAGS += -DWITH_R_PLUGINS
-HDR += sisocks.h Rsrv.h Rconnection.h config.h
-SRC += r.cpp Rconnection.cpp
-ifeq ($(SYS),MAC)
-LIB += -ldl
-endif
-ifeq ($(SYS),UNIX)
-LIB += -ldl -lcrypt
-endif
-endif
-
-ifdef WITH_ZLIB
-CXXFLAGS += -DWITH_ZLIB
-HDR += zfstream.h
-SRC += zfstream.cpp
-LIB += -lz
-endif
-
-ifdef WITH_LAPACK
-CXXFLAGS += -DWITH_LAPACK
-HDR += lapackf.h
-SRC += lapackf.cpp
-LIB += $(LIB_LAPACK) 
-endif
-
-OBJ = $(SRC:.cpp=.o)
-
-all : $(OUTPUT) 
-
-$(OUTPUT) :
-	$(CXX) $(CXXFLAGS) -o $(OUTPUT) $(OBJ) $(LIB) 
-
-$(OBJ) : $(HDR)
-
-.cpp.o : 
-	$(CXX) $(CXXFLAGS) -c $*.cpp
-.SUFFIXES : .cpp .c .o $(SUFFIXES)
-
-$(OUTPUT) : $(OBJ)
-
-FORCE:
+$T: ${OMAIN}
+	${CC} ${LFLAGS} -o $T ${OMAIN} $L
 
 clean:
-	rm -f *.o *~
+	rm -f *.o
+	rm -f $T
